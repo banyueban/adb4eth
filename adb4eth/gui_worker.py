@@ -28,6 +28,7 @@ class GuiWorker:
         self._thread: Optional[threading.Thread] = None
         self._ctx: Optional[RunContext] = None
         self._cancel = threading.Event()
+        self._rollback_lock = threading.Lock()
 
     # ---------- UI 线程调用 ----------
     def start(self, no_config: bool, debug_net: str, pc_ip: str, reg_ip: str,
@@ -62,6 +63,29 @@ class GuiWorker:
         if self._ctx is None:
             return []
         return list(self._ctx.results[seen:])
+
+    def rollback(self) -> bool:
+        """恢复配置快照（若有）。用于 GUI「回滚配置」按钮。"""
+        with self._rollback_lock:
+            ctx = self._ctx
+            if ctx is None or not ctx.snapshot:
+                return False
+            try:
+                from .platform.base import create_adapter
+                adapter = self.adapter or create_adapter(ctx.platform)
+                ok = True
+                for name, snap in ctx.snapshot.iface_cfg.items():
+                    # 从 ctx 里找回该接口
+                    target = ctx.iface if ctx.iface and ctx.iface.name == name else None
+                    if target:
+                        if not adapter.rollback_iface(target, snap):
+                            ok = False
+                ctx.snapshot = None
+                self.events.put(("stage", ("回滚", "已恢复配置快照" if ok else "部分回滚失败")))
+                return ok
+            except Exception as e:
+                self.events.put(("error", f"回滚失败: {e}"))
+                return False
 
     # ---------- 后台线程 ----------
     def _run(self, no_config: bool) -> None:

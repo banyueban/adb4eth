@@ -42,11 +42,27 @@ class NetworkLayerDetector:
             results.append(DetResult("L3", "对端可达(ping)", False, "SKIP", "未配置IP，跳过"))
 
         # 路由指向调试网卡
-        out = run_cmd(["route", "-n", "get", self.ctx.reg_ip]) if self.ctx.platform == "macos" else ""
-        iface_match = f"interface: {iface.name}" in out if out else True
+        route_ok = True
+        route_evidence = iface.name
+        if self.ctx.platform == "macos":
+            out = run_cmd(["route", "-n", "get", self.ctx.reg_ip])
+            if "interface:" in out:
+                iface_match = f"interface: {iface.name}" in out
+                route_ok = iface_match
+                route_evidence = out.split("interface:")[1].splitlines()[0].strip()
+        else:
+            # Windows: 查目标 IP 的出接口
+            out = run_cmd([
+                "powershell", "-NoProfile", "-Command",
+                f"$r = Get-NetRoute -DestinationPrefix '{self.ctx.reg_ip}/32' -ErrorAction SilentlyContinue | "
+                f"Select-Object -First 1; if ($r) {{ (Get-NetAdapter -InterfaceIndex $r.InterfaceIndex).Name }}",
+            ])
+            rname = out.strip()
+            route_ok = (rname == iface.name)
+            route_evidence = rname or "无路由"
         results.append(DetResult(
-            "L3", "路由指向调试网卡", iface_match, "PASS" if iface_match else "FAIL",
-            out.split("interface:")[1].splitlines()[0].strip() if "interface:" in out else iface.name,
+            "L3", "路由指向调试网卡", route_ok, "PASS" if route_ok else "FAIL",
+            route_evidence,
             "路由未指向调试网卡：请检查网段配置",
         ))
 

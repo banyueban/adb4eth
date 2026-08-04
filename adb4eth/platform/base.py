@@ -117,7 +117,16 @@ class PlatformAdapter(ABC):
     # ---------- 工具 ----------
     @staticmethod
     def ping(host: str, count: int = 3, timeout: float = 3.0, source: Optional[str] = None) -> bool:
-        """ICMP 探测，可选绑定源 IP。"""
+        """ICMP 探测，可选绑定源 IP。跨平台（macOS/Windows）。"""
+        if os.name == "nt":
+            # Windows ping 语法与输出
+            cmd = ["ping", "-n", str(count), "-w", str(int(timeout * 1000))]
+            if source:
+                cmd += ["-S", source]
+            cmd.append(host)
+            out = run_cmd(cmd, timeout=timeout * count + 5)
+            # Windows 成功输出含 "(0% loss)" 或 "Lost = 0"
+            return ("0% loss" in out or "Lost = 0" in out or "Lost = 0 " in out) and "100% loss" not in out and "Lost = 1" not in out
         if source:
             cmd = ["ping", "-c", str(count), "-t", str(timeout), "-S", source, host]
         else:

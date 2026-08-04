@@ -50,23 +50,24 @@ class TopologyDetector:
             "未发现USB网卡：确认扩展坞/USB转网口已插入且被系统识别",
         ))
 
-        # 选择调试网卡：优先已 up 的 usb_ethernet，其次 ethernet，绝不用默认路由网卡
+        # 选择调试网卡：只选 USB 网卡（扩展坞），绝不动内置网卡/默认路由网卡
+        # 理由：内置有线网卡可能是用户正常联网通道，误配会破坏原网络
         candidate = None
-        for i in physical:
-            if i.link_up and i.iftype in ("usb_ethernet", "ethernet"):
-                if i.name == self.ctx.default_route_iface:
-                    continue  # 避免配置到默认路由网卡
-                if candidate is None:
-                    candidate = i
-                elif i.iftype == "usb_ethernet" and candidate.iftype != "usb_ethernet":
-                    candidate = i
-        if candidate is None and usb_nics:
-            candidate = usb_nics[0]
+        for i in usb_nics:
+            if i.name == self.ctx.default_route_iface:
+                continue  # 默认路由网卡绝不配置
+            if candidate is None:
+                candidate = i
+            elif i.link_up and not candidate.link_up:
+                candidate = i  # 优先已 up 的 USB 网卡
         self.ctx.iface = candidate
+        selected_msg = f"{candidate.name}({candidate.vendor or 'unknown chip'})" if candidate else "无"
+        if candidate is None and not usb_nics:
+            selected_msg = "未发现USB网卡"
         results.append(DetResult(
             "TOP", "选定调试网卡", candidate is not None, "PASS" if candidate else "FAIL",
-            f"{candidate.name if candidate else '无'}",
-            "无可用有线调试网卡：请插入网线/USB网卡后重试",
+            selected_msg,
+            "未插入 USB 扩展坞网卡：请插入扩展坞/USB网卡后重试（为避免破坏联网，不会修改内置网卡）",
         ))
 
         self.ctx.results.extend(results)

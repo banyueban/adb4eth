@@ -33,7 +33,9 @@ class PhysicalLayerDetector:
             f"{iface.name}: {'active' if iface.link_up else 'inactive'}",
             "链路未激活：检查网线两端是否插紧、扩展坞/USB网卡供电",
         ))
-        media_ok = bool(iface.media and ("baseTX" in iface.media or "Gbps" in iface.media))
+        # 协商速率：macOS 输出 "100baseTX"/"1000baseT"，Windows 输出 "100 Mbps"/"1 Gbps"
+        media_ok = bool(iface.media and any(
+            s in iface.media for s in ("baseTX", "baseT", "Mbps", "Gbps")))
         results.append(DetResult(
             "L1", "协商速率", media_ok,
             "PASS" if (media_ok and iface.link_up) else "WARN",

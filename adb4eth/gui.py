@@ -154,6 +154,13 @@ class App(ctk.CTk):
             height=34, corner_radius=10, command=self._stop, state="disabled",
         )
         self.btn_cancel.pack(fill="x", pady=(8, 0))
+        self.btn_rollback = ctk.CTkButton(
+            btns, text="回滚配置", font=_font(13),
+            fg_color="transparent", border_width=1, border_color=PAL["border"],
+            hover_color=PAL["panel2"], text_color=PAL["warn"],
+            height=34, corner_radius=10, command=self._rollback, state="disabled",
+        )
+        self.btn_rollback.pack(fill="x", pady=(8, 0))
 
         self.progress = ctk.CTkProgressBar(
             panel, height=6, corner_radius=3, mode="indeterminate",
@@ -275,6 +282,17 @@ class App(ctk.CTk):
         if self.worker.running():
             self.worker.cancel()
             self._append_log("正在停止…")
+
+    def _rollback(self):
+        if self.worker.running():
+            self._append_log("运行中，请先停止再回滚")
+            return
+        self._append_log("正在回滚配置快照…")
+        if self.worker.rollback():
+            self._append_log("已恢复配置快照")
+            self.btn_rollback.configure(state="disabled")
+        else:
+            self._append_log("无可回滚的快照，或回滚失败")
 
     def _export(self):
         if not self._last_ctx:
@@ -431,6 +449,8 @@ class App(ctk.CTk):
             self._seen += len(rem)
         self._last_ctx = ctx
         self._set_running(False)
+        # 有快照（曾修改过配置）时启用回滚按钮
+        self.btn_rollback.configure(state="normal" if ctx.snapshot else "disabled")
         fails = [r for r in ctx.results if r.status == "FAIL"]
         adb = ctx.adb
         if adb and adb.status == "device":

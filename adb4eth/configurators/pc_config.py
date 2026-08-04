@@ -84,7 +84,15 @@ class PcConfigurator:
         return results
 
     def _has_net_route(self, net: str, iface_name: str) -> bool:
-        from ..platform.base import run_shell
+        from ..platform.base import run_cmd, run_shell
+        if self.ctx.platform == "windows":
+            out = run_cmd([
+                "powershell", "-NoProfile", "-Command",
+                f"Get-NetRoute -AddressFamily IPv4 -ErrorAction SilentlyContinue | "
+                f"Where-Object {{ $_.DestinationPrefix -like '{net}.*' }} | "
+                "Select-Object -ExpandProperty DestinationPrefix",
+            ])
+            return net in out
         out = run_shell("netstat -rn -f inet 2>/dev/null | grep -E 'default|%s'" % net)
         return net in out
 
