@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "adb4eth"
+version = "0.1.0"
+description = "有线 ADB 调试自动检测与配置工具（macOS / Windows / Android）"
+requires-python = ">=3.9"
+
+[project.scripts]
+adb4eth = "adb4eth.cli:main"
+adb4eth-gui = "adb4eth.gui:main"
+
+[tool.setuptools.packages.find]
+include = ["adb4eth*"]
