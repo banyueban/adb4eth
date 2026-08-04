@@ -53,8 +53,36 @@ jobs:
           python-version: "3.11"
       - name: Install PyInstaller
         run: python -m pip install pyinstaller customtkinter
+      - name: Download platform-tools (bundled adb)
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p platform-tools
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            ADB_URL="https://dl.google.com/android/repository/platform-tools-latest-windows.zip"
+            curl -fsSL -o pt.zip "$ADB_URL"
+            unzip -o pt.zip -d pt_extract
+            cp pt_extract/platform-tools/* platform-tools/
+          else
+            ADB_URL="https://dl.google.com/android/repository/platform-tools-latest-darwin.zip"
+            curl -fsSL -o pt.zip "$ADB_URL"
+            unzip -o pt.zip -d pt_extract
+            cp pt_extract/platform-tools/* platform-tools/
+          fi
+          chmod +x platform-tools/adb* 2>/dev/null || true
+          ls -la platform-tools/ | head -5
+          test -f platform-tools/adb* && echo "platform-tools ready"
       - name: Build with PyInstaller
         run: python -m PyInstaller adb4eth.spec --noconfirm
+      - name: Verify adb bundled
+        shell: bash
+        run: |
+          set -euxo pipefail
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            test -f dist/adb4eth/_internal/platform-tools/adb.exe && echo "Windows adb bundled OK" || (find dist -name "adb*" | head; echo "WARNING: adb not bundled")
+          else
+            test -d dist/adb4eth.app/Contents/Resources/platform-tools && echo "macOS adb bundled OK" || (find dist -name "adb*" | head; echo "WARNING: adb not bundled")
+          fi
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
