@@ -1,5 +1,11 @@
 # -*- coding: utf-8 -*-
-"""打包后的资源定位：优先使用包内随附的 adb（platform-tools），否则退回系统 PATH。"""
+"""打包后的资源定位：优先使用包内随附的 adb（platform-tools），否则退回系统 PATH。
+
+打包时 platform-tools 由 CI 构建后复制到产物内：
+- macOS  .app:  Contents/Resources/platform-tools/
+- Windows  onedir:  _internal/platform-tools/
+开发模式下直接查找仓库根目录 platform-tools/。
+"""
 from __future__ import annotations
 
 import os
@@ -21,6 +27,9 @@ def bundle_roots() -> list:
         if meipass:
             roots.append(meipass)
         roots.append(os.path.dirname(sys.executable))
+        # macOS .app 资源目录
+        if sys.platform == "darwin" and os.path.isdir(os.path.join(os.path.dirname(sys.executable), "..", "Resources")):
+            roots.append(os.path.join(os.path.dirname(sys.executable), "..", "Resources"))
     else:
         roots.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     return roots

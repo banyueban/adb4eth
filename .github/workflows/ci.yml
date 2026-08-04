@@ -70,14 +70,28 @@ jobs:
           test -f platform-tools/adb* && echo "platform-tools ready"
       - name: Build with PyInstaller
         run: python -m PyInstaller adb4eth.spec --noconfirm
+      - name: Bundle platform-tools into artifact
+        shell: bash
+        run: |
+          set -euxo pipefail
+          # PyInstaller 的 datas 收集对 macOS BUNDLE 不生效，构建后手动复制，可控可靠
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            DEST="dist/adb4eth/_internal"
+          else
+            DEST="dist/adb4eth.app/Contents/Resources"
+          fi
+          mkdir -p "$DEST/platform-tools"
+          cp -r platform-tools/. "$DEST/platform-tools/"
+          chmod +x "$DEST"/platform-tools/adb* 2>/dev/null || true
+          echo "platform-tools copied to $DEST/platform-tools/"
       - name: Verify adb bundled
         shell: bash
         run: |
           set -euxo pipefail
           if [ "$RUNNER_OS" = "Windows" ]; then
-            test -f dist/adb4eth/_internal/platform-tools/adb.exe && echo "Windows adb bundled OK" || (find dist -name "adb*" | head; echo "WARNING: adb not bundled")
+            test -f dist/adb4eth/_internal/platform-tools/adb.exe && echo "Windows adb bundled OK" || { echo "ERROR: adb not bundled"; exit 1; }
           else
-            test -d dist/adb4eth.app/Contents/Resources/platform-tools && echo "macOS adb bundled OK" || (find dist -name "adb*" | head; echo "WARNING: adb not bundled")
+            test -f dist/adb4eth.app/Contents/Resources/platform-tools/adb && echo "macOS adb bundled OK" || { echo "ERROR: adb not bundled"; exit 1; }
           fi
       - name: Upload artifact
         uses: actions/upload-artifact@v4
