@@ -148,8 +148,50 @@ def test_full_orchestration():
         base_mod.run_cmd = orig_run_cmd
 
 
+def test_connect_failure_not_reported_as_device():
+    """回归：adb connect 失败且 devices 无该设备时，不得误报为 device。"""
+    from adb4eth.detectors.adb import AdbDetector
+    from adb4eth.models import RunContext
+    from adb4eth.platform import base as base_mod
+    from adb4eth.platform.base import create_adapter
+
+    ctx = RunContext()
+    a = MockAdapter()
+    a.port_open = True  # 端口探测通过，但 adb 层失败
+
+    orig_run_cmd = base_mod.run_cmd
+    calls = []
+
+    def fake_run_cmd(cmd, timeout=15.0, check=False):
+        calls.append(cmd)
+        joined = " ".join(cmd) if isinstance(cmd, list) else str(cmd)
+        if joined.startswith("adb version"):
+            return "Android Debug Bridge version 1.0.41"
+        if joined.startswith("adb kill-server") or joined.startswith("adb start-server"):
+            return "* daemon started"
+        if joined.startswith("adb connect"):
+            return "failed to connect to '192.168.100.2:5555': Connection timed out"
+        if joined.startswith("adb devices"):
+            # 设备列表为空（没有 192.168.100.2:5555）
+            return "List of devices attached\n\n"
+        return ""
+    base_mod.run_cmd = fake_run_cmd
+
+    try:
+        AdbDetector(ctx, a).detect()
+        assert ctx.adb is not None, "应有 adb 状态"
+        assert ctx.adb.status == "not_connected", f"应 not_connected, got {ctx.adb.status}"
+        adb_res = [r for r in ctx.results if r.layer == "ADB"]
+        assert any(r.name == "adb connect" and r.status == "FAIL" for r in adb_res), \
+            f"adb connect 应 FAIL, got {[r.status for r in adb_res]}"
+        print("PASS: connect failure -> not_connected (no false 'device')")
+    finally:
+        base_mod.run_cmd = orig_run_cmd
+
+
 if __name__ == "__main__":
     test_no_usb_nic_selects_nothing()
     test_selects_usb_nic()
     test_full_orchestration()
+    test_connect_failure_not_reported_as_device()
     print("\nALL TESTS PASSED")

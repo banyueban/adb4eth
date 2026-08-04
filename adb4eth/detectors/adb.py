@@ -5,7 +5,8 @@ from __future__ import annotations
 from typing import List, Optional
 
 from ..models import AdbState, DetResult, RunContext
-from ..platform.base import PlatformAdapter, run_cmd, run_shell
+from ..platform import base as _base
+from ..platform.base import PlatformAdapter, run_shell
 
 
 class TransportLayerDetector:
@@ -37,7 +38,8 @@ class AdbDetector:
         self.adapter = adapter
 
     def _adb(self, args: List[str], timeout: float = 15.0) -> str:
-        return run_cmd(["adb"] + args, timeout=timeout)
+        # 通过模块属性动态取 run_cmd，便于测试/打包时替换
+        return _base.run_cmd(["adb"] + args, timeout=timeout)
 
     def detect(self) -> List[DetResult]:
         results = []
@@ -45,7 +47,7 @@ class AdbDetector:
         port = self.ctx.adb_port
 
         # 先确认本机 adb 存在
-        vout = run_cmd(["adb", "version"], timeout=10)
+        vout = _base.run_cmd(["adb", "version"], timeout=10)
         adb_exists = "Android Debug Bridge" in vout
         results.append(DetResult(
             "ADB", "adb工具", adb_exists, "PASS" if adb_exists else "FAIL",
@@ -76,7 +78,7 @@ class AdbDetector:
 
         devices = self._adb(["devices", "-l"], timeout=10)
         dev_line = [l for l in devices.splitlines() if l.startswith(f"{host}:{port}")]
-        status = "device"
+        status = "not_connected"
         model = None
         if dev_line:
             parts = dev_line[0].split()
