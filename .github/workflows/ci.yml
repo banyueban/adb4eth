@@ -60,17 +60,13 @@ jobs:
           mkdir -p platform-tools
           if [ "$RUNNER_OS" = "Windows" ]; then
             ADB_URL="https://dl.google.com/android/repository/platform-tools-latest-windows.zip"
-            curl -fsSL -o pt.zip "$ADB_URL"
-            unzip -o pt.zip -d pt_extract
-            cp pt_extract/platform-tools/* platform-tools/
           else
             ADB_URL="https://dl.google.com/android/repository/platform-tools-latest-darwin.zip"
-            curl -fsSL -o pt.zip "$ADB_URL"
-            unzip -o pt.zip -d pt_extract
-            cp pt_extract/platform-tools/* platform-tools/
           fi
+          curl -fsSL -o pt.zip "$ADB_URL"
+          unzip -o pt.zip -d pt_extract
+          cp -r pt_extract/platform-tools/* platform-tools/
           chmod +x platform-tools/adb* 2>/dev/null || true
-          ls -la platform-tools/ | head -5
           test -f platform-tools/adb* && echo "platform-tools ready"
       - name: Build with PyInstaller
         run: python -m PyInstaller adb4eth.spec --noconfirm
