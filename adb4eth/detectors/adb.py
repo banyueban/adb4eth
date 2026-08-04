@@ -60,47 +60,44 @@ class AdbDetector:
 
         self._adb(["kill-server"])
         self._adb(["start-server"])
-        out = self._adb(["connect", f"{host}:{port}"], timeout=10)
-        state = self._parse(out)
-        state.host = host
-        state.port = port
+        self._adb(["connect", f"{host}:{port}"], timeout=10)
+        state = AdbState(host, port)
 
-        # unauthorized 时等收银机屏幕授权，最多重试几次
-        retries = 0
-        while self._parse(out).status == "unauthorized" and retries < 5:
-            import time
-            time.sleep(2)
-            out = self._adb(["connect", f"{host}:{port}"], timeout=10)
-            state = self._parse(out)
-            state.host = host
-            state.port = port
-            retries += 1
+        # 以 `adb devices -l` 的真实设备状态为准做状态机恢复。
+        # 场景：重插 USB 网卡后 adb server 常残留 offline；unauthorized 需等屏幕授权。
+        import time
+        attempts = 0
+        while attempts < 5:
+            status, model = self._device_state(host, port)
+            if status == "device":
+                break
+            if status == "offline":
+                # 主动断开 + 重启 server 清残留状态
+                self._adb(["disconnect", f"{host}:{port}"], timeout=10)
+                self._adb(["kill-server"])
+                self._adb(["start-server"])
+                time.sleep(1)
+            elif status == "unauthorized":
+                time.sleep(2)  # 等收银机屏幕授权
+            else:
+                # not_connected：链路/端口问题，交给下方统一判定，不重试
+                break
+            self._adb(["connect", f"{host}:{port}"], timeout=10)
+            attempts += 1
 
-        devices = self._adb(["devices", "-l"], timeout=10)
-        dev_line = [l for l in devices.splitlines() if l.startswith(f"{host}:{port}")]
-        status = "not_connected"
-        model = None
-        if dev_line:
-            parts = dev_line[0].split()
-            if len(parts) >= 2:
-                status = parts[1]
-            for p in parts:
-                if p.startswith("model:"):
-                    model = p.split(":", 1)[1]
-        state.status = status
-        state.model = model
+        state.status, state.model = self._device_state(host, port)
         self.ctx.adb = state
 
-        ok = status == "device"
+        ok = state.status == "device"
         advice_map = {
             "offline": "ADB offline：在收银机重启adbd(或工具自动重启)，再重试",
             "unauthorized": "收银机屏幕弹窗请点「允许」，然后重新连接",
             "not_connected": "连接失败：回到L2/L4检查链路与端口",
         }
         results.append(DetResult(
-            "ADB", "adb connect", ok, "PASS" if ok else ("FAIL" if status != "device" else "WARN"),
-            f"adb connect {host}:{port} -> {status}" + (f" (model={model})" if model else ""),
-            advice_map.get(status, "连接异常"),
+            "ADB", "adb connect", ok, "PASS" if ok else "FAIL",
+            f"adb connect {host}:{port} -> {state.status}" + (f" (model={state.model})" if state.model else ""),
+            advice_map.get(state.status, "连接异常"),
         ))
 
         if ok:
@@ -113,11 +110,16 @@ class AdbDetector:
         self.ctx.results.extend(results)
         return results
 
-    def _parse(self, out: str) -> AdbState:
-        if "failed to connect" in out or "cannot connect" in out or "Connection" in out and "refused" in out:
-            return AdbState("", status="not_connected")
-        if "failed to authenticate" in out or "unauthorized" in out:
-            return AdbState("", status="unauthorized")
-        if "already connected" in out or "connected" in out:
-            return AdbState("", status="device")
-        return AdbState("", status="not_connected")
+    def _device_state(self, host: str, port: int) -> tuple:
+        """从 `adb devices -l` 解析目标设备真实状态。设备不存在返回 not_connected。"""
+        devices = self._adb(["devices", "-l"], timeout=10)
+        for line in devices.splitlines():
+            if line.startswith(f"{host}:{port}"):
+                parts = line.split()
+                status = parts[1] if len(parts) >= 2 else "unknown"
+                model = None
+                for p in parts[2:]:
+                    if p.startswith("model:"):
+                        model = p.split(":", 1)[1]
+                return status, model
+        return "not_connected", None

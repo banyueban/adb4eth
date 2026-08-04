@@ -189,9 +189,58 @@ def test_connect_failure_not_reported_as_device():
         base_mod.run_cmd = orig_run_cmd
 
 
+def test_offline_recovered_by_restart():
+    """回归：offline 状态通过 disconnect + kill/start-server 重试恢复为 device。"""
+    from adb4eth.detectors.adb import AdbDetector
+    from adb4eth.models import RunContext
+    from adb4eth.platform import base as base_mod
+    from adb4eth.platform.base import create_adapter
+
+    ctx = RunContext()
+    a = MockAdapter()
+    a.port_open = True
+
+    orig_run_cmd = base_mod.run_cmd
+    connect_count = {"n": 0}
+
+    def fake_run_cmd(cmd, timeout=15.0, check=False):
+        joined = " ".join(cmd) if isinstance(cmd, list) else str(cmd)
+        if joined.startswith("adb version"):
+            return "Android Debug Bridge version 1.0.41"
+        if joined.startswith("adb kill-server") or joined.startswith("adb start-server"):
+            return "* daemon restarted"
+        if joined.startswith("adb disconnect"):
+            return ""
+        if joined.startswith("adb connect"):
+            connect_count["n"] += 1
+            # 第一次 connect 后设备 offline，重试后恢复 device
+            if connect_count["n"] <= 1:
+                return "connected to 192.168.100.2:5555"
+            return "connected to 192.168.100.2:5555"
+        if joined.startswith("adb devices"):
+            n = connect_count["n"]
+            if n <= 1:
+                return "List of devices attached\n192.168.100.2:5555 offline\n"
+            return "List of devices attached\n192.168.100.2:5555  device product:rk3399_all model:TPS980P\n"
+        return ""
+    base_mod.run_cmd = fake_run_cmd
+
+    try:
+        AdbDetector(ctx, a).detect()
+        assert ctx.adb is not None
+        assert ctx.adb.status == "device", f"offline 重试后应 device, got {ctx.adb.status}"
+        adb_res = [r for r in ctx.results if r.layer == "ADB"]
+        assert any(r.name == "adb connect" and r.status == "PASS" for r in adb_res), \
+            f"adb connect 应 PASS, got {[r.status for r in adb_res]}"
+        print("PASS: offline recovered via disconnect + server restart")
+    finally:
+        base_mod.run_cmd = orig_run_cmd
+
+
 if __name__ == "__main__":
     test_no_usb_nic_selects_nothing()
     test_selects_usb_nic()
     test_full_orchestration()
     test_connect_failure_not_reported_as_device()
+    test_offline_recovered_by_restart()
     print("\nALL TESTS PASSED")
