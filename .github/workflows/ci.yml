@@ -52,7 +52,12 @@ jobs:
         with:
           python-version: "3.11"
       - name: Install PyInstaller
-        run: python -m pip install pyinstaller customtkinter
+        run: python -m pip install pyinstaller customtkinter pillow
+      - name: Generate app icon
+        shell: bash
+        run: |
+          python scripts/make_icon.py
+          test -f build_assets/icon.icns -o -f build_assets/icon.ico
       - name: Download platform-tools (bundled adb)
         shell: bash
         run: |

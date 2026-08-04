@@ -9,3 +9,5 @@ dist/
 platform-tools/adb
 *.spec.bak
 .claude/
+# 生成的图标（CI 里由 scripts/make_icon.py 重新生成）
+build_assets/

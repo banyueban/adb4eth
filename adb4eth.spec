@@ -41,12 +41,10 @@ a = Analysis(
 pyz = PYZ(a.pure)
 
 # onedir：EXE 带上 binaries 与 datas（统一结构，dist/adb4eth/<可执行文件>）
-exe = EXE(
-    pyz,
-    a.scripts,
-    a.binaries,
-    a.datas,
-    [],
+exe_args = [
+    pyz, a.scripts, a.binaries, a.datas, [],
+]
+exe_kwargs = dict(
     name="adb4eth",
     debug=False,
     bootloader_ignore_signals=False,
@@ -54,11 +52,15 @@ exe = EXE(
     upx=True,
     console=False,
 )
+if is_win:
+    exe_kwargs["icon"] = os.path.join(repo_root, "build_assets", "icon.ico")
+
+exe = EXE(*exe_args, **exe_kwargs)
 
 if not is_win:
     app = BUNDLE(
         exe,
         name="adb4eth.app",
-        icon=None,
+        icon=os.path.join(repo_root, "build_assets", "icon.icns"),
         bundle_identifier="com.adb4eth.tool",
     )
