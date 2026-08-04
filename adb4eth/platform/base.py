@@ -6,6 +6,7 @@ ARP、端口探测等。Windows / macOS 分别实现。
 """
 from __future__ import annotations
 
+import os
 import shlex
 import subprocess
 from abc import ABC, abstractmethod
@@ -22,6 +23,13 @@ class CommandError(RuntimeError):
         self.output = output
 
 
+def _subprocess_kwargs() -> dict:
+    """Windows 上抑制子进程弹出控制台黑框；其他平台无影响。"""
+    if os.name == "nt":
+        return {"creationflags": subprocess.CREATE_NO_WINDOW}
+    return {}
+
+
 def run_cmd(cmd: List[str], timeout: float = 15.0, check: bool = False) -> str:
     """执行命令，返回 stdout+stderr 合并文本。check=True 时失败抛 CommandError。"""
     try:
@@ -30,6 +38,7 @@ def run_cmd(cmd: List[str], timeout: float = 15.0, check: bool = False) -> str:
             capture_output=True,
             text=True,
             timeout=timeout,
+            **_subprocess_kwargs(),
         )
     except subprocess.TimeoutExpired:
         if check:
@@ -50,6 +59,7 @@ def run_shell(cmd: str, timeout: float = 15.0, check: bool = False) -> str:
             capture_output=True,
             text=True,
             timeout=timeout,
+            **_subprocess_kwargs(),
         )
     except subprocess.TimeoutExpired:
         return "TIMEOUT"
