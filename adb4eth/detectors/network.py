@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from ..models import DetResult, RunContext
-from ..platform.base import PlatformAdapter, run_cmd
+from ..platform.base import PlatformAdapter, ping_cmd, run_cmd
 
 _PS_UTF8 = "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8;"
 
@@ -36,9 +36,12 @@ class NetworkLayerDetector:
 
         # 对端 ping（绑定源 IP）
         if iface.ip:
-            ok = PlatformAdapter.ping(
+            ok, ping_out = ping_cmd(
                 self.ctx.reg_ip, count=3, timeout=3, source=iface.ip
             )
+            evidence = f"ping -S {iface.ip} {self.ctx.reg_ip}"
+            if ping_out:
+                evidence += " | " + " ".join(ping_out.splitlines()[:2])[:100]
             # 收银机常不响应 ICMP，但 ADB(TCP) 可通；此时记 WARN 而非 FAIL
             results.append(
                 DetResult(
@@ -46,7 +49,7 @@ class NetworkLayerDetector:
                     "对端可达(ping)",
                     ok,
                     "PASS" if ok else "WARN",
-                    f"ping -S {iface.ip} {self.ctx.reg_ip}",
+                    evidence,
                     "对端不响应ICMP属正常（部分收银机ROM），以ADB端口为准；若ADB也不通则检查链路",
                 )
             )
@@ -65,7 +68,7 @@ class NetworkLayerDetector:
                 route_evidence = out.split("interface:")[1].splitlines()[0].strip()
         else:
             rname = self._windows_route_iface()
-            route_ok = rname == iface.name
+            route_ok = bool(rname) and rname.strip().lower() == iface.name.lower()
             route_evidence = rname or "无路由"
         results.append(
             DetResult(

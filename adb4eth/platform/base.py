@@ -67,6 +67,38 @@ def run_cmd(
     return out
 
 
+def _ping_cmd(
+    host: str, count: int = 3, timeout: float = 3.0, source: str | None = None
+) -> list[str]:
+    """构造跨平台 ping 命令（列表形式）。"""
+    try:
+        wait_ms = int(timeout * 1000)
+    except (TypeError, ValueError):
+        wait_ms = 3000
+    if os.name == "nt":
+        cmd = ["ping", "-n", str(count), "-w", str(wait_ms)]
+        if source:
+            cmd += ["-S", source]
+        cmd.append(host)
+    elif source:
+        cmd = ["ping", "-c", str(count), "-t", str(timeout), "-S", source, host]
+    else:
+        cmd = ["ping", "-c", str(count), "-t", str(timeout), host]
+    return cmd
+
+
+def ping_cmd(
+    host: str, count: int = 3, timeout: float = 3.0, source: str | None = None
+) -> tuple[bool, str]:
+    """执行 ping，返回 (是否可达, 原始输出)。输出可用于检测报告诊断。"""
+    cmd = _ping_cmd(host, count, timeout, source)
+    try:
+        out = run_cmd(cmd, timeout=timeout * count + 5, check=True)
+        return True, out.strip()
+    except Exception as e:
+        return False, (getattr(e, "output", None) or str(e)).strip()
+
+
 class PlatformAdapter(ABC):
     platform: str = "unknown"
 
@@ -126,24 +158,7 @@ class PlatformAdapter(ABC):
         以命令退出码判定结果，避免解析本地化输出（"0% loss" / "Lost = 0" /
         中文“丢失”等）。Windows: ping -n/-w/-S；macOS: ping -c/-t/-S。
         """
-        try:
-            wait_ms = int(timeout * 1000)
-        except (TypeError, ValueError):
-            wait_ms = 3000
-        if os.name == "nt":
-            cmd = ["ping", "-n", str(count), "-w", str(wait_ms)]
-            if source:
-                cmd += ["-S", source]
-            cmd.append(host)
-        elif source:
-            cmd = ["ping", "-c", str(count), "-t", str(timeout), "-S", source, host]
-        else:
-            cmd = ["ping", "-c", str(count), "-t", str(timeout), host]
-        try:
-            run_cmd(cmd, timeout=timeout * count + 5, check=True)
-            return True
-        except CommandError:
-            return False
+        return ping_cmd(host, count, timeout, source)[0]
 
 
 def create_adapter(platform: str | None = None) -> PlatformAdapter:

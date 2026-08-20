@@ -184,8 +184,9 @@ class WindowsAdapter(PlatformAdapter):
         script = (
             f"$c = New-Object System.Net.Sockets.TcpClient; "
             f"try {{ $iar = $c.BeginConnect('{host}', {port}, $null, $null); "
-            f"$ok = $iar.AsyncWaitHandle.WaitOne({ms}, $false) -and $c.Connected; "
-            f"if ($ok) {{ $c.EndConnect($iar) }}; if ($ok) {{ 'True' }} else {{ 'False' }} }} "
+            f"$ok = $iar.AsyncWaitHandle.WaitOne({ms}, $false); "
+            f"if ($ok) {{ try {{ $c.EndConnect($iar); $ok = $c.Connected }} catch {{ $ok = $false }} }}; "
+            f"if ($ok) {{ 'True' }} else {{ 'False' }} }} "
             f"finally {{ $c.Close() }}"
         )
         out = self._run_ps(script, timeout=timeout + 5)
@@ -238,12 +239,14 @@ class WindowsAdapter(PlatformAdapter):
             f"$ips = Get-NetIPAddress -InterfaceAlias '{iface.name}' -AddressFamily IPv4 "
             "-ErrorAction SilentlyContinue | Select-Object IPAddress,PrefixLength,PrefixOrigin; "
             f"$cfg = Get-NetIPConfiguration -InterfaceAlias '{iface.name}' -ErrorAction SilentlyContinue; "
+            f"$m = Get-NetIPInterface -InterfaceAlias '{iface.name}' -AddressFamily IPv4 "
+            "-ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty InterfaceMetric; "
             "$gw = $null; "
             "if ($cfg) { $g = $cfg | Select-Object -ExpandProperty IPv4DefaultGateway -ErrorAction SilentlyContinue; "
             "if ($g) { $gw = $g | Select-Object -First 1 -ExpandProperty NextHop } }; "
             "@{ ips = @($ips | ForEach-Object { "
             "@{ ip = $_.IPAddress; prefix = $_.PrefixLength; dhcp = ($_.PrefixOrigin -eq 'Dhcp') } }); "
-            "gw = $gw } | ConvertTo-Json -Compress"
+            "gw = $gw; metric = $m } | ConvertTo-Json -Compress"
         )
         out = self._run_ps(script, timeout=30)
         snap = {
@@ -251,6 +254,7 @@ class WindowsAdapter(PlatformAdapter):
             "mask": iface.mask,
             "gw": iface.gateway,
             "dhcp": False,
+            "metric": None,
             "addresses": [],
         }
         data = self._load_json(out)
@@ -271,6 +275,11 @@ class WindowsAdapter(PlatformAdapter):
             gw = data.get("gw")
             if gw:
                 snap["gw"] = gw
+            metric = data.get("metric")
+            if metric is not None:
+                m = self._int_or(metric, -1)
+                if m >= 0:
+                    snap["metric"] = m
             if snap["addresses"]:
                 first = snap["addresses"][0]
                 snap["ip"] = first["ip"]
@@ -308,6 +317,7 @@ class WindowsAdapter(PlatformAdapter):
                     timeout=30,
                     check=True,
                 )
+                self._restore_metric(name, snap)
                 return True
             # 原为静态：清空当前 IPv4（含 DHCP 残留）后按快照恢复
             self._run_ps(
@@ -361,9 +371,33 @@ class WindowsAdapter(PlatformAdapter):
                         timeout=30,
                         check=True,
                     )
+            self._restore_metric(name, snap)
             return True
         except Exception:
             return False
 
+    def _restore_metric(self, name: str, snap: dict) -> None:
+        """恢复接口跃点数（快照中有记录时）。"""
+        metric = snap.get("metric")
+        if metric is None:
+            return
+        self._run_ps(
+            f"Set-NetIPInterface -InterfaceAlias '{name}' -AddressFamily IPv4 "
+            f"-InterfaceMetric {self._int_or(metric, 1)} -ErrorAction SilentlyContinue",
+            timeout=30,
+        )
+
     def ensure_priority(self, protect_iface: str, iface: NetIface) -> bool:
-        return True  # Windows 下通过“调试网卡不设网关”保证，无需调优先级
+        """让调试网卡在 Windows 上优先承载直连网段流量。
+
+        把调试网卡 IPv4 接口跃点数设为 1：当 Wi-Fi/内置网卡也处于同一网段
+        （如 192.168.100.x）时，Windows 会优先选择跃点数更低的调试网卡，
+        避免 ping/ADB 流量错误地走默认路由网卡。
+        """
+        self._run_ps(
+            f"Set-NetIPInterface -InterfaceAlias '{iface.name}' -AddressFamily IPv4 "
+            "-InterfaceMetric 1 -ErrorAction Stop",
+            timeout=30,
+            check=True,
+        )
+        return True

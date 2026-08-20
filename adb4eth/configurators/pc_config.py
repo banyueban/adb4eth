@@ -52,16 +52,18 @@ class PcConfigurator:
         )
 
         try:
-            # 1. 优先级保护（macOS）
-            if self.ctx.default_route_iface:
-                self.adapter.ensure_priority(self.ctx.default_route_iface, iface)
+            # 1. 优先级保护（macOS 服务顺序；Windows 设调试网卡接口跃点数）
+            if self.ctx.platform == "windows" or self.ctx.default_route_iface:
+                self.adapter.ensure_priority(
+                    self.ctx.default_route_iface or "", iface
+                )
                 results.append(
                     DetResult(
                         "CFG",
                         "服务优先级保护",
                         True,
                         "PASS",
-                        f"确保 {self.ctx.default_route_iface} 优先",
+                        f"确保 {self.ctx.default_route_iface or iface.name} 优先",
                         "",
                     )
                 )

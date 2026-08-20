@@ -100,6 +100,7 @@ class PlatformAdapter(ABC):
 | ARP 表 | `arp -a` / `Get-NetNeighbor` | |
 | 端口探测 | .NET `TcpClient.BeginConnect` + `AsyncWaitHandle.WaitOne(超时)` | 替代 `Test-NetConnection`，3 秒内返回 |
 | L3 路由指向 | `Find-NetRoute -RemoteIPAddress IP` → `InterfaceIndex` → 网卡名 | 避免 `/32` 精确路由误判；不可用时回退网段匹配 |
+| 直连路由优先 | `Set-NetIPInterface -InterfaceMetric 1`（调试网卡 IPv4） | 当 Wi-Fi/内置网卡同处调试网段时，确保流量走调试网卡；回滚时恢复原跃点数 |
 
 > **Windows 关键**：配置采用 `netsh ... static ... none`，调试网卡**不设默认网关**，不会参与默认路由竞争；所有写操作 `check=True`，失败即抛错并回滚，不再出现“命令失败仍记 PASS”。PowerShell 输出统一 UTF-8 解码，中文网卡名不乱码。
 

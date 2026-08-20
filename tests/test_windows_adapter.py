@@ -9,7 +9,7 @@ from unittest import mock
 from adb4eth.models import NetIface
 from adb4eth.platform import base as base_mod
 from adb4eth.platform import windows_adapter as wa_mod
-from adb4eth.platform.base import CommandError, PlatformAdapter
+from adb4eth.platform.base import CommandError, PlatformAdapter, ping_cmd
 from adb4eth.platform.windows_adapter import WindowsAdapter
 
 
@@ -118,6 +118,7 @@ class WindowsAdapterTest(unittest.TestCase):
         self.assertTrue(adapter.probe_port("192.168.100.2", 5555, timeout=2.0))
         self.assertIn("TcpClient", scripts[0])
         self.assertIn("WaitOne", scripts[0])
+        self.assertIn("EndConnect", scripts[0])  # 先 EndConnect 再判 Connected，避免误报
         adapter._run_ps = lambda script, timeout=20.0, check=False: "False"  # type: ignore[method-assign]
         self.assertFalse(adapter.probe_port("192.168.100.2", 5555, timeout=2.0))
 
@@ -143,6 +144,7 @@ class WindowsAdapterTest(unittest.TestCase):
                     {"ip": "192.168.100.10", "prefix": 24, "dhcp": False},
                 ],
                 "gw": "192.168.0.1",
+                "metric": 55,
             }
         )
         adapter._run_ps = lambda script, timeout=20.0, check=False: payload  # type: ignore[method-assign]
@@ -151,10 +153,24 @@ class WindowsAdapterTest(unittest.TestCase):
         self.assertEqual(snap["ip"], "192.168.100.1")
         self.assertEqual(snap["mask"], "255.255.255.0")
         self.assertEqual(snap["gw"], "192.168.0.1")
+        self.assertEqual(snap["metric"], 55)
         self.assertEqual(len(snap["addresses"]), 2)
         self.assertFalse(snap["dhcp"])
 
-    def test_rollback_dhcp_uses_netsh_dhcp(self):
+    def test_ensure_priority_sets_interface_metric(self):
+        adapter = WindowsAdapter()
+        scripts = []
+
+        def fake(script: str, timeout: float = 20.0, check: bool = False) -> str:
+            scripts.append(script)
+            return ""
+
+        adapter._run_ps = fake  # type: ignore[method-assign]
+        iface = NetIface(name="以太网")
+        self.assertTrue(adapter.ensure_priority("Wi-Fi", iface))
+        self.assertIn("InterfaceMetric 1", scripts[0])
+
+    def test_rollback_restores_metric(self):
         adapter = WindowsAdapter()
         iface = NetIface(name="以太网")
         snap = {
@@ -162,9 +178,15 @@ class WindowsAdapterTest(unittest.TestCase):
             "mask": "255.255.255.0",
             "gw": None,
             "dhcp": True,
+            "metric": 55,
             "addresses": [{"ip": "192.168.100.1", "prefix": 24, "dhcp": True}],
         }
+        ps_scripts = []
         calls = []
+
+        def fake_run_ps(script: str, timeout: float = 20.0, check: bool = False) -> str:
+            ps_scripts.append(script)
+            return ""
 
         def fake_run_cmd(
             cmd, timeout=15.0, check=False, encoding=None, errors="replace"
@@ -172,9 +194,11 @@ class WindowsAdapterTest(unittest.TestCase):
             calls.append(cmd)
             return ""
 
+        adapter._run_ps = fake_run_ps  # type: ignore[method-assign]
         with mock.patch.object(wa_mod, "run_cmd", side_effect=fake_run_cmd):
             self.assertTrue(adapter.rollback_iface(iface, snap))
         self.assertTrue(any("dhcp" in c for c in calls))
+        self.assertTrue(any("InterfaceMetric 55" in s for s in ps_scripts))
 
     def test_ping_uses_exit_code(self):
         with mock.patch.object(base_mod, "run_cmd", return_value=""):
@@ -186,13 +210,28 @@ class WindowsAdapterTest(unittest.TestCase):
         with mock.patch.object(base_mod, "run_cmd", side_effect=fail):
             self.assertFalse(PlatformAdapter.ping("192.0.2.1", count=1, timeout=1))
 
+    def test_ping_cmd_returns_output(self):
+        def fail(cmd, timeout=15.0, check=False, encoding=None, errors="replace"):
+            raise CommandError(" ".join(cmd), 1, "Transmit failed. General failure.")
+
+        with mock.patch.object(base_mod, "run_cmd", side_effect=fail):
+            ok, out = ping_cmd("192.0.2.1", count=1, timeout=1)
+        self.assertFalse(ok)
+        self.assertIn("General failure", out)
+
     def test_run_cmd_missing_binary(self):
-        with mock.patch.object(base_mod.subprocess, "run",
-                               side_effect=FileNotFoundError("no such file")):
+        with mock.patch.object(
+            base_mod.subprocess, "run", side_effect=FileNotFoundError("no such file")
+        ):
             self.assertIn("no such file", base_mod.run_cmd(["definitely-not-a-cmd"]))
-        with mock.patch.object(base_mod.subprocess, "run",
-                               side_effect=FileNotFoundError("no such file")), \
-                self.assertRaises(CommandError):
+        with (
+            mock.patch.object(
+                base_mod.subprocess,
+                "run",
+                side_effect=FileNotFoundError("no such file"),
+            ),
+            self.assertRaises(CommandError),
+        ):
             base_mod.run_cmd(["definitely-not-a-cmd"], check=True)
 
 
