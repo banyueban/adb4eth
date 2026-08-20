@@ -1,16 +1,15 @@
-# -*- coding: utf-8 -*-
 """平台命令适配层。
 
 抽象平台差异：网卡枚举、默认路由、接口状态、静态 IP 配置（绝不设默认网关）、
 ARP、端口探测等。Windows / macOS 分别实现。
 """
+
 from __future__ import annotations
 
 import os
-import shlex
 import subprocess
 from abc import ABC, abstractmethod
-from typing import List, Optional
+from subprocess import TimeoutExpired
 
 from ..models import NetIface
 
@@ -30,42 +29,36 @@ def _subprocess_kwargs() -> dict:
     return {}
 
 
-def run_cmd(cmd: List[str], timeout: float = 15.0, check: bool = False) -> str:
-    """执行命令，返回 stdout+stderr 合并文本。check=True 时失败抛 CommandError。"""
+def run_cmd(
+    cmd: list[str],
+    timeout: float = 15.0,
+    check: bool = False,
+    encoding: str | None = None,
+    errors: str = "replace",
+) -> str:
+    """执行命令，返回 stdout+stderr 合并文本。check=True 时失败抛 CommandError。
+
+    encoding/errors：Windows 侧 PowerShell 输出统一按 UTF-8 解码，避免中文乱码。
+    """
+    kwargs = _subprocess_kwargs()
+    if encoding is not None:
+        kwargs["encoding"] = encoding
+        kwargs["errors"] = errors
     try:
         proc = subprocess.run(
             cmd,
             capture_output=True,
             text=True,
             timeout=timeout,
-            **_subprocess_kwargs(),
+            **kwargs,
         )
-    except subprocess.TimeoutExpired:
+    except TimeoutExpired:
         if check:
-            raise CommandError(" ".join(cmd), -1, "TIMEOUT")
+            raise CommandError(" ".join(cmd), -1, "TIMEOUT") from None
         return "TIMEOUT"
     out = (proc.stdout or "") + (proc.stderr or "")
     if check and proc.returncode != 0:
         raise CommandError(" ".join(cmd), proc.returncode, out)
-    return out
-
-
-def run_shell(cmd: str, timeout: float = 15.0, check: bool = False) -> str:
-    """执行 shell 字符串命令（用于带管道/引号场景），输出合并文本。"""
-    try:
-        proc = subprocess.run(
-            cmd,
-            shell=True,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            **_subprocess_kwargs(),
-        )
-    except subprocess.TimeoutExpired:
-        return "TIMEOUT"
-    out = (proc.stdout or "") + (proc.stderr or "")
-    if check and proc.returncode != 0:
-        raise CommandError(cmd, proc.returncode, out)
     return out
 
 
@@ -74,11 +67,11 @@ class PlatformAdapter(ABC):
 
     # ---------- 只读检测 ----------
     @abstractmethod
-    def list_interfaces(self) -> List[NetIface]:
+    def list_interfaces(self) -> list[NetIface]:
         """枚举物理网卡（过滤虚拟接口）。"""
 
     @abstractmethod
-    def get_default_route_iface(self) -> Optional[str]:
+    def get_default_route_iface(self) -> str | None:
         """返回默认路由所在网卡名（如 en0），无则 None。"""
 
     @abstractmethod
@@ -95,7 +88,7 @@ class PlatformAdapter(ABC):
 
     # ---------- 配置（写操作，需遵守默认路由保护） ----------
     @abstractmethod
-    def enable_iface(self, name: str) -> bool:
+    def enable_iface(self, iface: NetIface) -> bool:
         """启用网络服务/网卡。"""
 
     @abstractmethod
@@ -115,35 +108,51 @@ class PlatformAdapter(ABC):
         """确保上网网卡优先于调试网卡（macOS 服务优先级；Windows 一般无需）。"""
 
     # ---------- 工具 ----------
+    def is_admin(self) -> bool:
+        """当前进程是否具备配置类操作所需权限。macOS 默认视为可写；Windows 需管理员。"""
+        return True
+
     @staticmethod
-    def ping(host: str, count: int = 3, timeout: float = 3.0, source: Optional[str] = None) -> bool:
-        """ICMP 探测，可选绑定源 IP。跨平台（macOS/Windows）。"""
+    def ping(
+        host: str, count: int = 3, timeout: float = 3.0, source: str | None = None
+    ) -> bool:
+        """ICMP 探测，可选绑定源 IP。跨平台（macOS/Windows）。
+
+        以命令退出码判定结果，避免解析本地化输出（"0% loss" / "Lost = 0" /
+        中文“丢失”等）。Windows: ping -n/-w/-S；macOS: ping -c/-t/-S。
+        """
+        try:
+            wait_ms = int(timeout * 1000)
+        except (TypeError, ValueError):
+            wait_ms = 3000
         if os.name == "nt":
-            # Windows ping 语法与输出
-            cmd = ["ping", "-n", str(count), "-w", str(int(timeout * 1000))]
+            cmd = ["ping", "-n", str(count), "-w", str(wait_ms)]
             if source:
                 cmd += ["-S", source]
             cmd.append(host)
-            out = run_cmd(cmd, timeout=timeout * count + 5)
-            # Windows 成功输出含 "(0% loss)" 或 "Lost = 0"
-            return ("0% loss" in out or "Lost = 0" in out or "Lost = 0 " in out) and "100% loss" not in out and "Lost = 1" not in out
-        if source:
+        elif source:
             cmd = ["ping", "-c", str(count), "-t", str(timeout), "-S", source, host]
         else:
             cmd = ["ping", "-c", str(count), "-t", str(timeout), host]
-        out = run_cmd(cmd, timeout=timeout * count + 5)
-        return " 0." in out and "100.0% packet loss" not in out and "0% packet loss" not in out
+        try:
+            run_cmd(cmd, timeout=timeout * count + 5, check=True)
+            return True
+        except CommandError:
+            return False
 
 
-def create_adapter(platform: Optional[str] = None) -> "PlatformAdapter":
+def create_adapter(platform: str | None = None) -> PlatformAdapter:
     """根据平台创建适配器；platform 为空时自动探测。"""
     import sys
+
     if platform is None:
         platform = "windows" if sys.platform.startswith("win") else "macos"
     if platform == "macos":
         from .macos_adapter import MacOSAdapter
+
         return MacOSAdapter()
     elif platform == "windows":
         from .windows_adapter import WindowsAdapter
+
         return WindowsAdapter()
     raise ValueError(f"unsupported platform: {platform}")

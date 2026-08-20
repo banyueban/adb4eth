@@ -1,12 +1,12 @@
-# -*- coding: utf-8 -*-
 """L4 传输层 + L7 应用层(ADB) 检测。"""
+
 from __future__ import annotations
 
-from typing import List, Optional
+import time
 
 from ..models import AdbState, DetResult, RunContext
 from ..platform import base as _base
-from ..platform.base import PlatformAdapter, run_shell
+from ..platform.base import PlatformAdapter
 
 
 class TransportLayerDetector:
@@ -16,16 +16,21 @@ class TransportLayerDetector:
         self.ctx = ctx
         self.adapter = adapter
 
-    def detect(self) -> List[DetResult]:
+    def detect(self) -> list[DetResult]:
         results = []
         host = self.ctx.reg_ip
         port = self.ctx.adb_port
         ok = self.adapter.probe_port(host, port, timeout=3.0)
-        results.append(DetResult(
-            "L4", f"ADB端口 {port}", ok, "PASS" if ok else "FAIL",
-            f"nc -z {host} {port} -> {'open' if ok else 'closed'}",
-            "端口不通：收银机未开「网络调试」/ adbd未监听 / 以太网接口DOWN / 单向链路故障",
-        ))
+        results.append(
+            DetResult(
+                "L4",
+                f"ADB端口 {port}",
+                ok,
+                "PASS" if ok else "FAIL",
+                f"nc -z {host} {port} -> {'open' if ok else 'closed'}",
+                "端口不通：收银机未开「网络调试」/ adbd未监听 / 以太网接口DOWN / 单向链路故障",
+            )
+        )
         self.ctx.results.extend(results)
         return results
 
@@ -37,11 +42,11 @@ class AdbDetector:
         self.ctx = ctx
         self.adapter = adapter
 
-    def _adb(self, args: List[str], timeout: float = 15.0) -> str:
+    def _adb(self, args: list[str], timeout: float = 15.0) -> str:
         # 通过模块属性动态取 run_cmd，便于测试/打包时替换
         return _base.run_cmd(["adb"] + args, timeout=timeout)
 
-    def detect(self) -> List[DetResult]:
+    def detect(self) -> list[DetResult]:
         results = []
         host = self.ctx.reg_ip
         port = self.ctx.adb_port
@@ -49,11 +54,16 @@ class AdbDetector:
         # 先确认本机 adb 存在
         vout = _base.run_cmd(["adb", "version"], timeout=10)
         adb_exists = "Android Debug Bridge" in vout
-        results.append(DetResult(
-            "ADB", "adb工具", adb_exists, "PASS" if adb_exists else "FAIL",
-            vout.strip().splitlines()[0] if vout else "",
-            "未找到 adb：请安装 Android platform-tools",
-        ))
+        results.append(
+            DetResult(
+                "ADB",
+                "adb工具",
+                adb_exists,
+                "PASS" if adb_exists else "FAIL",
+                vout.strip().splitlines()[0] if vout else "",
+                "未找到 adb：请安装 Android platform-tools",
+            )
+        )
         if not adb_exists:
             self.ctx.results.extend(results)
             return results
@@ -65,7 +75,6 @@ class AdbDetector:
 
         # 以 `adb devices -l` 的真实设备状态为准做状态机恢复。
         # 场景：重插 USB 网卡后 adb server 常残留 offline；unauthorized 需等屏幕授权。
-        import time
         attempts = 0
         while attempts < 5:
             status, model = self._device_state(host, port)
@@ -94,19 +103,32 @@ class AdbDetector:
             "unauthorized": "收银机屏幕弹窗请点「允许」，然后重新连接",
             "not_connected": "连接失败：回到L2/L4检查链路与端口",
         }
-        results.append(DetResult(
-            "ADB", "adb connect", ok, "PASS" if ok else "FAIL",
-            f"adb connect {host}:{port} -> {state.status}" + (f" (model={state.model})" if state.model else ""),
-            advice_map.get(state.status, "连接异常"),
-        ))
+        results.append(
+            DetResult(
+                "ADB",
+                "adb connect",
+                ok,
+                "PASS" if ok else "FAIL",
+                f"adb connect {host}:{port} -> {state.status}"
+                + (f" (model={state.model})" if state.model else ""),
+                advice_map.get(state.status, "连接异常"),
+            )
+        )
 
         if ok:
-            shell = self._adb(["-s", f"{host}:{port}", "shell", "echo", "ADB_OK"], timeout=10)
-            results.append(DetResult(
-                "ADB", "shell可执行", "ADB_OK" in shell, "PASS" if "ADB_OK" in shell else "FAIL",
-                shell.strip()[:80],
-                "shell 执行失败：设备状态可能异常",
-            ))
+            shell = self._adb(
+                ["-s", f"{host}:{port}", "shell", "echo", "ADB_OK"], timeout=10
+            )
+            results.append(
+                DetResult(
+                    "ADB",
+                    "shell可执行",
+                    "ADB_OK" in shell,
+                    "PASS" if "ADB_OK" in shell else "FAIL",
+                    shell.strip()[:80],
+                    "shell 执行失败：设备状态可能异常",
+                )
+            )
         self.ctx.results.extend(results)
         return results
 

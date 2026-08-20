@@ -1,8 +1,8 @@
-# -*- coding: utf-8 -*-
 """编排器：按阶段驱动整个流程，维护运行状态与结果汇总。"""
+
 from __future__ import annotations
 
-from typing import List, Optional
+import contextlib
 
 from .configurators.android_config import AndroidConfigurator
 from .configurators.pc_config import PcConfigurator
@@ -15,27 +15,35 @@ from .platform.base import PlatformAdapter, create_adapter, run_cmd
 
 
 class Orchestrator:
-    def __init__(self, ctx: Optional[RunContext] = None, on_stage=None):
+    def __init__(
+        self, ctx: RunContext | None = None, on_stage=None, on_select_iface=None
+    ):
         self.ctx = ctx or RunContext()
         self.adapter: PlatformAdapter = create_adapter(self.ctx.platform)
         self.on_stage = on_stage  # 可选阶段回调(phase, msg) -> None，供 GUI 实时显示
+        self.on_select_iface = (
+            on_select_iface  # 可选网卡选择回调(candidates) -> NetIface|None
+        )
 
     def _emit(self, phase: str, msg: str) -> None:
         import time
+
         entry = {"phase": phase, "msg": msg, "ts": time.strftime("%H:%M:%S")}
         self.ctx.steps.append(entry)
         if self.on_stage:
-            try:
+            with contextlib.suppress(Exception):
                 self.on_stage(phase, msg)
-            except Exception:
-                pass
 
-    def _find_connected_adb(self) -> Optional[str]:
+    def _find_connected_adb(self) -> str | None:
         """返回已连接的 ADB 序列号（用于操作收银机端），无则 None。"""
         out = run_cmd(["adb", "devices"], timeout=10)
         for line in out.splitlines():
             parts = line.split()
-            if len(parts) >= 2 and parts[1] == "device" and not parts[0].startswith("*"):
+            if (
+                len(parts) >= 2
+                and parts[1] == "device"
+                and not parts[0].startswith("*")
+            ):
                 return parts[0]
         return None
 
@@ -47,7 +55,7 @@ class Orchestrator:
 
         # 阶段1: 拓扑
         self._emit("拓扑", "枚举网卡、识别默认路由与 USB 网卡…")
-        TopologyDetector(ctx, self.adapter).detect()
+        TopologyDetector(ctx, self.adapter, selector=self.on_select_iface).detect()
         if not ctx.iface:
             self._emit("拓扑", "未找到可用的有线调试网卡")
             return ctx
@@ -62,7 +70,9 @@ class Orchestrator:
         ctx.iface = fresh
         need_cfg = not (fresh.ip and fresh.ip.startswith(ctx.debug_net))
         if need_cfg:
-            self._emit("配置", f"为 {ctx.iface.name} 配置静态 IP {ctx.pc_ip}（不设默认网关）…")
+            self._emit(
+                "配置", f"为 {ctx.iface.name} 配置静态 IP {ctx.pc_ip}（不设默认网关）…"
+            )
             PcConfigurator(ctx, self.adapter).configure()
         else:
             self._emit("配置", f"{ctx.iface.name} 已在调试网段，跳过配置")
@@ -76,12 +86,17 @@ class Orchestrator:
             android_cfg.configure()
         else:
             self._emit("收银机", "无已连 ADB 通道，需人工在收银机配置")
-            ctx.results.append(DetResult(
-                "ANDROID", "收银机配置", False, "WARN",
-                "无已连ADB通道，需人工在收银机配置",
-                "在收银机：设置→以太网→静态IP "
-                f"{ctx.reg_ip}/255.255.255.0；开发者选项→打开「网络调试」",
-            ))
+            ctx.results.append(
+                DetResult(
+                    "ANDROID",
+                    "收银机配置",
+                    False,
+                    "WARN",
+                    "无已连ADB通道，需人工在收银机配置",
+                    "在收银机：设置→以太网→静态IP "
+                    f"{ctx.reg_ip}/255.255.255.0；开发者选项→打开「网络调试」",
+                )
+            )
 
         # 阶段5: L3 网络层
         self._emit("L3", "网络层检测：IP/路由/默认路由保护…")
@@ -104,7 +119,7 @@ class Orchestrator:
         ctx.adb_available = bool(self._find_connected_adb())
 
         self._emit("拓扑", "枚举网卡、识别默认路由与 USB 网卡…")
-        TopologyDetector(ctx, self.adapter).detect()
+        TopologyDetector(ctx, self.adapter, selector=self.on_select_iface).detect()
         if not ctx.iface:
             self._emit("拓扑", "未找到可用的有线调试网卡")
             return ctx

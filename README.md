@@ -20,7 +20,23 @@ python3 -m adb4eth --no-config
 
 # 自定义网段 + 输出报告
 python3 -m adb4eth --net 192.168.100 --pc-ip 192.168.100.1 --reg-ip 192.168.100.2 --report report.md
+
+# 多网卡时查看候选 / 指定网卡
+python3 -m adb4eth --list-ifaces
+python3 -m adb4eth --iface en11
 ```
+
+## 网卡选择
+
+工具会把所有**物理有线网卡**（内置以太网 + USB 扩展坞网卡，不含 Wi-Fi/虚拟网卡）列为候选：
+
+- 只有一个候选时自动选中；
+- 多个候选时 CLI 交互询问序号、GUI 弹出选择框；
+- 可用 `--iface 网卡名` 跳过交互（适合脚本/自动化）；
+- 默认路由网卡会标记 `⚠ 默认路由`，完整配置模式下选择它需二次确认（可能断开现有网络）；
+- 仅检测模式（`--no-config` / 仅检测）不产生写操作，选择默认路由网卡无需确认。
+
+> **Windows 注意**：检测功能无需管理员权限；执行“配置静态 IP / 启用网卡”等写操作必须以**管理员身份**运行，否则配置步骤会明确报错（FAIL）且不做任何修改。
 
 ## 图形界面（GUI）
 
@@ -44,6 +60,7 @@ python3 -m PyInstaller adb4eth.spec
 ```
 
 产物：
+
 - macOS：`dist/adb4eth.app`（双击运行；首次被 Gatekeeper 拦截时右键→打开）
 - 命令行：`dist/adb4eth`
 

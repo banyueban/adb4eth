@@ -1,20 +1,20 @@
-# -*- coding: utf-8 -*-
 """macOS 平台适配器。
 
 基于本次实测验证过的命令：
 - networksetup（服务/接口映射、IP 配置、服务启停、服务顺序）
 - ifconfig（链路/介质/ARP 状态）
 - netstat / route（默认路由、路由表）
-- ioreg / system_profiler（USB 网卡芯片识别）
+- networksetup -listallhardwareports（USB 网卡识别）
 - nc（端口探测）
 """
+
 from __future__ import annotations
 
+import contextlib
 import re
-from typing import List, Optional
 
-from ..models import NetIface, mask_to_prefix
-from .base import PlatformAdapter, run_cmd, run_shell
+from ..models import NetIface
+from .base import PlatformAdapter, run_cmd
 
 # Realtek / ASIX / 常见 USB 网卡芯片 vendor 关键字
 USB_NIC_VENDORS = ("0bda", "0b95", "17ef", "056e", "046d", "0e0f", "20a9")
@@ -69,7 +69,7 @@ class MacOSAdapter(PlatformAdapter):
             i += 1
         return mapping
 
-    def list_interfaces(self) -> List[NetIface]:
+    def list_interfaces(self) -> list[NetIface]:
         ifaces = []
         # 1) 接口集合
         out = run_cmd(["ifconfig", "-l"])
@@ -136,22 +136,25 @@ class MacOSAdapter(PlatformAdapter):
         return res
 
     def _fill_ip(self, iface: NetIface, detail: str) -> NetIface:
-        ip_m = re.search(r"inet\s+(\d+\.\d+\.\d+\.\d+)\s+netmask\s+0x([0-9a-fA-F]+)", detail)
+        ip_m = re.search(
+            r"inet\s+(\d+\.\d+\.\d+\.\d+)\s+netmask\s+0x([0-9a-fA-F]+)", detail
+        )
         if ip_m:
             iface.ip = ip_m.group(1)
             hexmask = ip_m.group(2)
-            mask = ".".join(str(int(hexmask[i:i + 2], 16)) for i in (0, 2, 4, 6))
-            iface.mask = mask
+            with contextlib.suppress(ValueError):
+                iface.mask = ".".join(
+                    str(int(hexmask[i : i + 2], 16)) for i in (0, 2, 4, 6)
+                )
         return iface
 
     # ---------------------------------------------------------------
-    def get_default_route_iface(self) -> Optional[str]:
+    def get_default_route_iface(self) -> str | None:
         out = run_cmd(["netstat", "-rn", "-f", "inet"])
         for line in out.splitlines():
-            if re.match(r"^default\s+\S+\s+\S+\s+(\S+)", line):
-                m = re.match(r"^default\s+\S+\s+\S+\s+(\S+)", line)
-                if m:
-                    return m.group(1)
+            m = re.match(r"^default\s+\S+\s+\S+\s+(\S+)", line)
+            if m:
+                return m.group(1)
         return None
 
     def refresh_iface(self, iface: NetIface) -> NetIface:
@@ -166,7 +169,7 @@ class MacOSAdapter(PlatformAdapter):
         iface.gateway = gw
         return iface
 
-    def _iface_gateway(self, name: str) -> Optional[str]:
+    def _iface_gateway(self, name: str) -> str | None:
         out = run_cmd(["netstat", "-rn", "-f", "inet"])
         for line in out.splitlines():
             m = re.match(r"^default\s+(\S+)\s+\S+\s+\S+.*\s" + name + r"\b", line)
@@ -175,16 +178,25 @@ class MacOSAdapter(PlatformAdapter):
         return None
 
     def get_arp_table(self) -> dict:
-        out = run_shell("arp -an 2>/dev/null")
+        out = run_cmd(["arp", "-an"])
         res = {}
         for line in out.splitlines():
-            m = re.search(r"\((\d+\.\d+\.\d+\.\d+)\)\s+at\s+([0-9a-f:]{10,17})\s+on\s+(\S+)", line)
+            m = re.search(
+                r"\((\d+\.\d+\.\d+\.\d+)\)\s+at\s+([0-9a-f:]{10,17})\s+on\s+(\S+)", line
+            )
             if m and not m.group(2).startswith("ff:ff"):
                 res[m.group(1)] = m.group(2)
         return res
 
     def probe_port(self, host: str, port: int, timeout: float = 3.0) -> bool:
-        out = run_shell(f"nc -z -G {int(timeout)} -w {int(timeout)} {host} {port} </dev/null 2>&1", timeout=timeout + 2)
+        try:
+            g = int(timeout)
+        except (TypeError, ValueError):
+            g = 3
+        out = run_cmd(
+            ["nc", "-z", "-G", str(g), "-w", str(g), host, str(port)],
+            timeout=timeout + 2,
+        )
         return out == "" or "succeeded" in out
 
     # ---------------------------------------------------------------
@@ -201,16 +213,19 @@ class MacOSAdapter(PlatformAdapter):
         svc = self._find_service(iface)
         cur = run_cmd(["networksetup", "-getnetworkserviceenabled", svc])
         if "Disabled" in cur:
-            run_cmd(["networksetup", "-setnetworkserviceenabled", svc, "on"], timeout=20)
+            run_cmd(
+                ["networksetup", "-setnetworkserviceenabled", svc, "on"], timeout=20
+            )
             return True
         return False
 
     def set_static_ip_no_gw(self, iface: NetIface, ip: str, mask: str) -> bool:
         """networksetup -setmanual 服务名 IP 掩码 0.0.0.0 —— 网关 0.0.0.0 不产生默认路由。"""
         svc = self._find_service(iface)
-        out = run_cmd(
+        run_cmd(
             ["networksetup", "-setmanual", svc, ip, mask, "0.0.0.0"],
-            timeout=30, check=True,
+            timeout=30,
+            check=True,
         )
         return True
 
@@ -219,7 +234,9 @@ class MacOSAdapter(PlatformAdapter):
         out = run_cmd(["networksetup", "-getinfo", svc])
         snap = {
             "svc": svc,
-            "ip": None, "mask": None, "gw": None,
+            "ip": None,
+            "mask": None,
+            "gw": None,
             "enabled": True,
             "cfg_type": None,
         }
@@ -233,19 +250,33 @@ class MacOSAdapter(PlatformAdapter):
                     snap["mask"] = v
                 elif k.strip() == "Router" and v:
                     snap["gw"] = v
-        snap["enabled"] = "Disabled" not in run_cmd(["networksetup", "-getnetworkserviceenabled", svc])
+        snap["enabled"] = "Disabled" not in run_cmd(
+            ["networksetup", "-getnetworkserviceenabled", svc]
+        )
         return snap
 
     def rollback_iface(self, iface: NetIface, snap: dict) -> bool:
         svc = snap.get("svc") or self._find_service(iface)
         try:
             if snap.get("ip"):
-                run_cmd(["networksetup", "-setmanual", svc, snap["ip"], snap.get("mask") or "255.255.255.0",
-                         snap.get("gw") or "0.0.0.0"], timeout=30)
+                run_cmd(
+                    [
+                        "networksetup",
+                        "-setmanual",
+                        svc,
+                        snap["ip"],
+                        snap.get("mask") or "255.255.255.0",
+                        snap.get("gw") or "0.0.0.0",
+                    ],
+                    timeout=30,
+                )
             else:
                 run_cmd(["networksetup", "-setdhcp", svc], timeout=30)
             if not snap.get("enabled", True):
-                run_cmd(["networksetup", "-setnetworkserviceenabled", svc, "off"], timeout=20)
+                run_cmd(
+                    ["networksetup", "-setnetworkserviceenabled", svc, "off"],
+                    timeout=20,
+                )
             return True
         except Exception:
             return False
@@ -272,14 +303,10 @@ class MacOSAdapter(PlatformAdapter):
         if protect_svc == debug_svc:
             return True
         # 重排：protect_svc 移到 debug_svc 之前
-        rest = [s for s in order if s != protect_svc and s != debug_svc]
-        idx = -1
-        if debug_svc in order:
-            idx = order.index(debug_svc)
-        if protect_svc in order and order.index(protect_svc) < (idx if idx >= 0 else len(order)):
+        idx = order.index(debug_svc) if debug_svc in order else -1
+        if protect_svc in order and (idx < 0 or order.index(protect_svc) < idx):
             # 已经在前面，无需改动
-            if idx < 0 or order.index(protect_svc) < idx:
-                return True
+            return True
         new_order = []
         inserted = False
         for s in order:
@@ -294,7 +321,7 @@ class MacOSAdapter(PlatformAdapter):
         run_cmd(["networksetup", "-ordernetworkservices"] + new_order, timeout=30)
         return True
 
-    def _current_service_order(self) -> List[str]:
+    def _current_service_order(self) -> list[str]:
         out = run_cmd(["networksetup", "-listnetworkserviceorder"])
         order = []
         for line in out.splitlines():

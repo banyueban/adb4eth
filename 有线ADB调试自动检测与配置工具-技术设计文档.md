@@ -39,8 +39,9 @@
 ```
 
 ### 1.1 模块职责
+
 | 模块 | 职责 |
-|---|---|
+| --- | --- |
 | Orchestrator | 阶段编排、状态机、回滚协调、报告汇总 |
 | Detectors | 各 OSI 层检测，返回结构化结果（含证据：命令+输出） |
 | Configurators | PC/Android 配置，含变更前备份与回滚 |
@@ -53,6 +54,7 @@
 ## 2. 平台命令适配层设计
 
 ### 2.1 接口定义
+
 ```python
 class PlatformAdapter(ABC):
     @abstractmethod
@@ -66,8 +68,9 @@ class PlatformAdapter(ABC):
 ```
 
 ### 2.2 macOS 实现要点（本次实测验证）
+
 | 操作 | 命令 | 注意 |
-|---|---|---|
+| --- | --- | --- |
 | 枚举物理网卡 | `networksetup -listallhardwareports` + `ifconfig -l` | 过滤：Wi-Fi/en0 保留，虚拟接口(gif/stf/utun/bridge/anpi/ap)排除 |
 | USB 网卡识别 | `ioreg -p IOUSB -l` grep `USB Product Name`="USB xxx LAN"；`system_profiler SPUSBDataType` grep VendorID 0x0bda(RTL)/0x0b95(ASIX) | 识别扩展坞网口芯片 |
 | 接口链路状态 | `ifconfig enX` → `status:` / `media:` | `active`+`100baseTX` 表示 L1 通 |
@@ -84,22 +87,26 @@ class PlatformAdapter(ABC):
 > **macOS 活动接口（nwi）陷阱**：`scutil --nwi` 显示 `Network interfaces: en0` 时，en11 不被网络框架视为活动接口，三层流量不处理。给 en11 设置**有效网关**（指向自身网段内）后可纳入 nwi（`en0 en11`），但网关有效会产生默认路由，需配合优先级与回滚。**推荐流程：先降优先级再设网关，最后把网关改 0.0.0.0 观察是否仍在 nwi 中；若不在则需有效网关+优先级保证**。见 §6 安全配置策略。
 
 ### 2.3 Windows 实现要点
-| 操作 | 命令 | 注意 |
-|---|---|---|
-| 枚举物理网卡 | PowerShell `Get-NetAdapter \| Where PhysicalMediaType -match Ethernet\|Wireless` | 过滤虚拟/VPN（`Virtual`、`vEthernet`、`WSL`） |
-| USB 网卡识别 | `Get-NetAdapter` 的 InterfaceDescription 匹配 `Realtek\|ASIX\|RTL8\|USB.*Ethernet\|AX88` | |
-| 链路状态 | `Get-NetAdapter` 的 `Status`（Up/Down）、`LinkSpeed` | |
-| 默认路由 | `Get-NetRoute -DestinationPrefix '0.0.0.0/0'` 的 `ifIndex` | 映射到网卡 |
-| 设静态 IP **不设网关** | `New-NetIPAddress -InterfaceIndex X -IPAddress 192.168.100.1 -PrefixLength 24`（**不加 -DefaultGateway**） | 或 `netsh interface ip set address name="X" static 192.168.100.1 255.255.255.0` |
-| 清除已有网关 | `Remove-NetRoute -DestinationPrefix 0.0.0.0/0 -InterfaceIndex X -Confirm:$false` | 仅当该网卡存在错误网关时 |
-| ARP 表 | `arp -a` / `Get-NetNeighbor` | |
-| 端口探测 | `Test-NetConnection IP -Port 5555` | |
 
-> **Windows 关键**：`New-NetIPAddress` 只要不加 `-DefaultGateway`，就不会产生默认路由；且 Windows 对"多网卡带网关"会按接口 metric 选主网关，配置工具应**确保调试网卡无默认网关**，避免破坏主网卡上网。
+| 操作 | 命令 | 注意 |
+| --- | --- | --- |
+| 枚举物理网卡 | `Get-NetAdapter \| Where-Object { -not $_.Virtual ... }` | 过滤虚拟/VPN（`Virtual`、`vEthernet`、`WSL`） |
+| USB 网卡识别 | `PnPDeviceID` 以 `USB\` 开头（描述关键字兜底） | 避免内置 Realtek PCIe 网卡误判为 USB |
+| 链路状态 | `Get-NetAdapter` 的 `Status`（Up/Down）、`LinkSpeed` | |
+| 默认路由 | `Get-NetRoute -DestinationPrefix '0.0.0.0/0'` 按 `RouteMetric, InterfaceMetric` 排序取第一条 | 映射到网卡 |
+| 设静态 IP **不设网关** | `netsh interface ip set address name="X" static 192.168.100.1 255.255.255.0 none` | 原子替换 DHCP/静态地址；`none` 不产生默认路由 |
+| 回滚 DHCP | `netsh interface ip set address name="X" dhcp` | 快照记录 `PrefixOrigin` 区分 DHCP/静态 |
+| 管理员权限 | `WindowsPrincipal.IsInRole(Administrator)` | 非管理员时配置步骤直接 FAIL 并提示 |
+| ARP 表 | `arp -a` / `Get-NetNeighbor` | |
+| 端口探测 | .NET `TcpClient.BeginConnect` + `AsyncWaitHandle.WaitOne(超时)` | 替代 `Test-NetConnection`，3 秒内返回 |
+| L3 路由指向 | `Find-NetRoute -RemoteIPAddress IP` → `InterfaceIndex` → 网卡名 | 避免 `/32` 精确路由误判；不可用时回退网段匹配 |
+
+> **Windows 关键**：配置采用 `netsh ... static ... none`，调试网卡**不设默认网关**，不会参与默认路由竞争；所有写操作 `check=True`，失败即抛错并回滚，不再出现“命令失败仍记 PASS”。PowerShell 输出统一 UTF-8 解码，中文网卡名不乱码。
 
 ### 2.4 Android 端命令（通过 adb shell 执行，需 root 或已授权）
+
 | 操作 | 命令 |
-|---|---|
+| --- | --- |
 | 查所有接口 | `ip addr show` |
 | 查接口状态 | `ip link show ethX` / `cat /sys/class/net/ethX/operstate` |
 | 查物理载波 | `cat /sys/class/net/ethX/carrier`（1=通） |
@@ -118,6 +125,7 @@ class PlatformAdapter(ABC):
 ## 3. 分层检测流程（Detectors）
 
 ### 3.1 检测结果结构
+
 ```python
 @dataclass
 class DetResult:
@@ -130,12 +138,14 @@ class DetResult:
 ```
 
 ### 3.2 L1 物理层
+
 - 目标：确认网卡存在、链路 up、协商速率正常。
 - macOS：`ifconfig enX`（status=active, media=100baseTX）；`networksetup -getmedia`。
 - Windows：`Get-NetAdapter` Status=Up, LinkSpeed=100 Mbps / 1 Gbps。
 - 失败建议：检查网线插入、扩展坞/USB 网卡是否被系统识别（`system_profiler SPUSBDataType` / 设备管理器）、换 USB-C 口。
 
 ### 3.3 L2 数据链路层
+
 - 目标：确认网线对端可达（ARP 能解析到对端 MAC）、无单向故障。
 - 探测：ping 对端候选 IP → `arp -an` 看是否出现对端 MAC；Android 已连则读 `/sys/class/net/ethX/statistics/rx_packets`。
 - **单向故障判定**（核心）：
@@ -143,6 +153,7 @@ class DetResult:
   - 建议：换 USB-C 口 → 换扩展坞/网卡 → 换网线 → 查供电。
 
 ### 3.4 L3 网络层
+
 - 目标：确认本端已配 IP/掩码、对端同网段、路由正确、**默认路由保护**生效。
 - 检测：
   - 本端 `ip addr`/`ifconfig enX`：IP=192.168.100.1/24。
@@ -151,11 +162,13 @@ class DetResult:
   - **默认路由保护**：`netstat -rn -f inet | grep '^default'` 确认仍是原网卡。
 
 ### 3.5 L4 传输层
+
 - 目标：收银机 5555 端口监听。
 - `nc -z -G 3 -w 3 192.168.100.2 5555` / `Test-NetConnection -Port 5555`。
 - 失败建议：见诊断树（开网络调试 / adbd 重启 / 以太网接口 UP）。
 
 ### 3.6 L7 应用层（ADB）
+
 - 目标：`adb connect` 达到 `device` 状态。
 - 状态机：`unauthorized` → 收银机屏幕点授权；`offline` → 重启 adbd 或重试；`failed to connect` → 回到 L4。
 
@@ -164,6 +177,7 @@ class DetResult:
 ## 4. 配置器设计
 
 ### 4.1 PcConfigurator（默认路由保护策略）
+
 ```
 输入：selected_iface, wanted_ip(默认192.168.100.1), mask(255.255.255.0)
 流程：
@@ -181,6 +195,7 @@ class DetResult:
 > **Windows metric 说明**：Windows 中同优先级多默认网关会按 metric 选主。策略是让调试网卡**没有默认网关**，从而完全不参与默认路由竞争。
 
 ### 4.2 AndroidConfigurator
+
 ```
 输入：已连 ADB（Wi-Fi 或任何可用通道）
 流程：
@@ -229,15 +244,18 @@ class DetResult:
 本次实测确认的三个陷阱及其解法：
 
 ### 6.1 服务优先级陷阱
+
 - 现象：USB 网卡服务排第一，配网关 → 默认路由切到 en11 → Wi-Fi 断网。
 - 解法：配置前 `networksetup -ordernetworkservices "Wi-Fi" "<USB服务>" ...`，把上网网卡排前面。**改配置前先识别上网网卡并保证其优先级**。
 
 ### 6.2 网关 0.0.0.0
+
 - `networksetup -setmanual "服务" IP 掩码 0.0.0.0` → 只产生直连网段路由，不产生默认路由。**这是首选方式，无需有效网关**。
 - 副作用：`scutil --nwi` 可能只认 en0（en11 不进活动接口），导致三层仍不通（本次实测现象）。
 - 结合 6.3 处理。
 
 ### 6.3 nwi 活动接口与有效网关的权衡
+
 - 现象：网关 0.0.0.0 时 nwi 不认 en11，三层流量不通；设有效网关（192.168.100.1）后 nwi 认 en11，三层通，但产生第二条默认路由。
 - 解法（推荐顺序）：
   1. `ordernetworkservices` 把上网网卡排前（保证其默认路由优先）。
@@ -247,6 +265,7 @@ class DetResult:
 - 建议实现为**可配置策略**：`strategy = "no_default_route" | "priority_protected"`，默认 `priority_protected`。
 
 ### 6.4 回滚
+
 - 每次写操作前记录快照（IP/掩码/网关/服务启停/服务顺序）。
 - 回验失败或用户中止 → 恢复快照（`setdhcp`/`setmanual` 恢复原值、`ordernetworkservices` 恢复原顺序、`setnetworkserviceenabled` 恢复原启停）。
 
@@ -332,7 +351,7 @@ wired_adb_tool/
 ## 10. 验收用例（对应需求文档 §9）
 
 | 用例 | 设计验证点 |
-|---|---|
+| --- | --- |
 | 正常直连 | 分层全部 PASS，adb 达 device，shell 可执行 |
 | 网线未插 | L1 FAIL，提示物理检查，不配置 |
 | 默认路由走 Wi-Fi | 配置后回验默认路由不变（§4.1 回验 a） |
@@ -347,7 +366,7 @@ wired_adb_tool/
 ## 11. 风险与限制
 
 | 风险 | 缓解 |
-|---|---|
+| --- | --- |
 | macOS 版本差异导致命令变化 | 命令执行失败时输出原始输出，供人工判断；保留 `--diagnostic` 模式 |
 | Windows 管理员权限 | 检测阶段无权限；配置阶段检测非管理员则提示以管理员重跑 |
 | Android 无 root | 运行时配置（ip/setprop）需 root 或 shell 权限；无权限时退化为纯人工指引 |
