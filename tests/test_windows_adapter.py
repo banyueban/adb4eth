@@ -186,6 +186,15 @@ class WindowsAdapterTest(unittest.TestCase):
         with mock.patch.object(base_mod, "run_cmd", side_effect=fail):
             self.assertFalse(PlatformAdapter.ping("192.0.2.1", count=1, timeout=1))
 
+    def test_run_cmd_missing_binary(self):
+        with mock.patch.object(base_mod.subprocess, "run",
+                               side_effect=FileNotFoundError("no such file")):
+            self.assertIn("no such file", base_mod.run_cmd(["definitely-not-a-cmd"]))
+        with mock.patch.object(base_mod.subprocess, "run",
+                               side_effect=FileNotFoundError("no such file")), \
+                self.assertRaises(CommandError):
+            base_mod.run_cmd(["definitely-not-a-cmd"], check=True)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

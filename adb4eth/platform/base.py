@@ -56,6 +56,11 @@ def run_cmd(
         if check:
             raise CommandError(" ".join(cmd), -1, "TIMEOUT") from None
         return "TIMEOUT"
+    except OSError as e:
+        # 命令不存在/无权限：check 时抛 CommandError，否则返回错误文本，避免调用方崩溃
+        if check:
+            raise CommandError(" ".join(cmd), -1, str(e)) from None
+        return str(e)
     out = (proc.stdout or "") + (proc.stderr or "")
     if check and proc.returncode != 0:
         raise CommandError(" ".join(cmd), proc.returncode, out)
